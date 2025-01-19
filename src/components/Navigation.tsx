@@ -19,7 +19,7 @@ const Navigation: React.FC<NavigationProps> = ({ activeSection, setActiveSection
   };
 
   return (
-    <header className="bg-gray-800 text-white p-4 sticky top-0 z-50">
+    <header className="bg-gray-800 text-white p-4 sticky top-0 z-50" id='navigationHeader'>
       {/* Parent container for the navigation */}
       <div className="flex justify-between items-center">
         {/* Mobile Hamburger Icon */}
