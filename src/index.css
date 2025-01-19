@@ -16,3 +16,8 @@ code {
 @tailwind components;
 @tailwind utilities;
 
+.grecaptcha-badge {
+  left: 0 !important;
+  right: auto !important;
+  bottom: 0 !important;
+}
