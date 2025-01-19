@@ -16,7 +16,7 @@ const ProfileCard: React.FC = () => {
             <img
                 className="w-64 h-64 mx-auto rounded-full"
                 src="portrait.png"
-                alt="Profile picture"
+                alt="Profile card"
             />
             <h3 className="mt-4 text-xl font-bold text-center text-gray-900 dark:text-gray-100">
                 Kaltrin Ismaili
