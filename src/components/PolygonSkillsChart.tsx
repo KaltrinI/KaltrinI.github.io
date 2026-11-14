@@ -1,16 +1,14 @@
 import React from 'react';
 
-export interface Skill {
-  name: string;
-  percent: number;
-}
+import { Skill } from '../game/content';
 
 interface PolygonSkillsChartProps {
   skills: Skill[];
   size?: number;
+  color?: string;
 }
 
-const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 300 }) => {
+const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 300, color = '#ef4444' }) => {
   const numSkills = skills.length;
   const centerX = size / 2;
   const centerY = size / 2;
@@ -54,13 +52,16 @@ const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 
       width={size}
       height={size}
       style={{ overflow: 'visible' }}
+      role="img"
+      aria-label={`Skills chart: ${skills.map(s => `${s.name} ${s.percent}`).join(', ')}`}
     >
       {gridPolygons.map((points, idx) => (
         <polygon
           key={idx}
           points={points}
           fill="none"
-          stroke="#ccc"
+          stroke="currentColor"
+          strokeOpacity="0.2"
           strokeWidth="1"
         />
       ))}
@@ -76,7 +77,8 @@ const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 
             y1={centerY}
             x2={x}
             y2={y}
-            stroke="#ccc"
+            stroke="currentColor"
+          strokeOpacity="0.2"
             strokeWidth="1"
           />
         );
@@ -84,14 +86,15 @@ const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 
 
       <polygon
         points={polygonPoints}
-        fill="rgba(239,68,68,0.5)"
-        stroke="#ef4444"
+        fill={color}
+        fillOpacity="0.35"
+        stroke={color}
         strokeWidth="2"
       />
 
       {polygonPoints.split(' ').map((point, index) => {
         const [x, y] = point.split(',').map(Number);
-        return <circle key={index} cx={x} cy={y} r={3} fill="#ef4444" />;
+        return <circle key={index} cx={x} cy={y} r={3} fill={color} />;
       })}
 
       {labelPoints.map((label, index) => (
@@ -100,7 +103,8 @@ const PolygonSkillsChart: React.FC<PolygonSkillsChartProps> = ({ skills, size = 
           x={label.x}
           y={label.y}
           fill="currentColor"
-          className="text-xs font-bold text-gray-900 dark:text-gray-100"
+          fontSize="11"
+          fontWeight="600"
           textAnchor="middle"
           dominantBaseline="middle"
         >
