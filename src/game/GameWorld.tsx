@@ -32,6 +32,8 @@ const MOVE_KEYS: Record<string, [number, number]> = {
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 
+const GROUND_TILES: [number, number] = [2, 2]; // keeps each bitmap well under mobile canvas size limits
+
 export const ZOOM_MIN = 0.55;
 export const ZOOM_MAX = 1.8;
 const DRAG_THRESHOLD = 12; // px a touch must travel before it counts as a joystick drag
@@ -53,7 +55,8 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
   const playerRef = useRef<HTMLDivElement>(null);
   const lanternRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<HTMLDivElement>(null);
-  const miniDotRef = useRef<SVGCircleElement>(null);
+  const miniDotRef = useRef<HTMLDivElement>(null);
+  const miniRef = useRef<HTMLDivElement>(null);
   const flashRef = useRef<HTMLDivElement>(null);
   const joyRef = useRef<HTMLDivElement>(null);
   const joyKnobRef = useRef<HTMLDivElement>(null);
@@ -77,6 +80,9 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     pointers: new Map<number, { x: number; y: number }>(),
     pinch: null as null | { d0: number; zoom0: number },
     gestureUsed: false, // a pinch happened during this touch sequence, so the release is not a tap
+    miniK: 0, // minimap pixels per world pixel
+    // Last values written to the DOM; writing only on change keeps idle frames free of style work.
+    last: { world: '', player: '', z: '', walking: '', dir: '', lantern: '', mini: '' },
   });
 
   const cb = useRef({ onInteract, onNearbyChange, onFirstMove, paused });
@@ -143,6 +149,59 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     },
   }));
 
+  // Pre-render the static ground into bitmap tiles once. Moving the camera then only shifts
+  // pictures instead of repainting ~1000 vector shapes as new areas come into view (the main
+  // cost on mobile Safari). If anything fails, the live SVG simply stays visible.
+  useEffect(() => {
+    const world = worldRef.current;
+    const svg = world?.querySelector('svg.ground') as SVGSVGElement | null;
+    const host = world?.querySelector('.ground-tiles') as HTMLDivElement | null;
+    if (!svg || !host) return;
+    let cancelled = false;
+    let url = '';
+    const timer = window.setTimeout(() => {
+      try {
+        const F = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+        const clone = svg.cloneNode(true) as SVGSVGElement;
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('width', String(WORLD_W * F));
+        clone.setAttribute('height', String(WORLD_H * F));
+        url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' }));
+        const img = new Image();
+        img.onload = () => {
+          if (cancelled) return;
+          const tw = WORLD_W / GROUND_TILES[0];
+          const th = WORLD_H / GROUND_TILES[1];
+          const frag = document.createDocumentFragment();
+          for (let r = 0; r < GROUND_TILES[1]; r++) {
+            for (let c = 0; c < GROUND_TILES[0]; c++) {
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.round(tw * F);
+              canvas.height = Math.round(th * F);
+              Object.assign(canvas.style, { left: `${c * tw}px`, top: `${r * th}px`, width: `${tw}px`, height: `${th}px` });
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return; // keep the SVG
+              ctx.drawImage(img, c * tw * F, r * th * F, tw * F, th * F, 0, 0, canvas.width, canvas.height);
+              frag.appendChild(canvas);
+            }
+          }
+          host.appendChild(frag);
+          svg.style.display = 'none';
+          URL.revokeObjectURL(url);
+        };
+        img.onerror = () => URL.revokeObjectURL(url);
+        img.src = url;
+      } catch {
+        // Keep the SVG ground.
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, []);
+
   // Pause: drop held keys and any walk target so the player doesn't drift.
   useEffect(() => {
     if (paused) {
@@ -162,6 +221,8 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       st.vw = viewport.clientWidth;
       st.vh = viewport.clientHeight;
       st.scale = computeScale(st.vw, st.vh, st.zoom);
+      st.miniK = (miniRef.current?.clientWidth ?? 0) / WORLD_W;
+      st.last.mini = '';
       st.snapCam = true;
     };
     resize();
@@ -383,28 +444,33 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
         const k = Math.min(1, dt * 7);
         st.camX += (camTX - st.camX) * k;
         st.camY += (camTY - st.camY) * k;
+        // Settle exactly on the target so an idle camera stops producing new transforms.
+        if (Math.abs(camTX - st.camX) < 0.05) st.camX = camTX;
+        if (Math.abs(camTY - st.camY) < 0.05) st.camY = camTY;
       }
 
-      const world = worldRef.current;
-      if (world) {
-        world.style.transform = `translate3d(${-st.camX * st.scale}px, ${-st.camY * st.scale}px, 0) scale(${st.scale})`;
-      }
+      // DOM writes: only when a value actually changes. Style changes on idle frames are pure waste,
+      // and rewriting z-index every frame forces the browser to rebuild its layer tree.
+      const L = st.last;
+      const worldT = `translate3d(${(-st.camX * st.scale).toFixed(2)}px, ${(-st.camY * st.scale).toFixed(2)}px, 0) scale(${st.scale})`;
+      if (worldT !== L.world && worldRef.current) worldRef.current.style.transform = L.world = worldT;
       const p = playerRef.current;
       if (p) {
-        p.style.transform = `translate3d(${st.x - 20}px, ${st.y - 57}px, 0)`;
-        p.style.zIndex = String(Math.round(st.y));
-        p.dataset.walking = moving ? 'true' : 'false';
+        const playerT = `translate3d(${(st.x - 20).toFixed(1)}px, ${(st.y - 57).toFixed(1)}px, 0)`;
+        if (playerT !== L.player) p.style.transform = L.player = playerT;
+        const z = String(depthFor(st.y));
+        if (z !== L.z) p.style.zIndex = L.z = z;
+        const walking = moving ? 'true' : 'false';
+        if (walking !== L.walking) p.dataset.walking = L.walking = walking;
         if (moving) {
-          p.dataset.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+          const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+          if (dir !== L.dir) p.dataset.dir = L.dir = dir;
         }
       }
-      if (lanternRef.current) {
-        lanternRef.current.style.transform = `translate3d(${st.x - 160}px, ${st.y - 190}px, 0)`;
-      }
-      if (miniDotRef.current) {
-        miniDotRef.current.setAttribute('cx', String(st.x));
-        miniDotRef.current.setAttribute('cy', String(st.y));
-      }
+      const lanternT = `translate3d(${(st.x - 160).toFixed(1)}px, ${(st.y - 190).toFixed(1)}px, 0)`;
+      if (lanternT !== L.lantern && lanternRef.current) lanternRef.current.style.transform = L.lantern = lanternT;
+      const miniT = `translate3d(${(st.x * st.miniK).toFixed(1)}px, ${(st.y * st.miniK).toFixed(1)}px, 0)`;
+      if (miniT !== L.mini && miniDotRef.current) miniDotRef.current.style.transform = L.mini = miniT;
 
       // Nearest landmark within interaction range.
       let best: Landmark | null = null;
@@ -451,7 +517,9 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       aria-label="Explorable world map. Use the arrow keys or WASD to walk, E to interact, or open the map to jump to a location."
     >
       <div ref={worldRef} className="world" style={{ width: WORLD_W, height: WORLD_H }}>
+        <div className="ground-tiles" aria-hidden="true" />
         <Ground />
+        <LakeFx />
         <Scenery />
 
         {landmarks.map(l => {
@@ -519,7 +587,7 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
         <div ref={joyKnobRef} className="joystick-knob" />
       </div>
 
-      <Minimap dotRef={miniDotRef} discovered={discovered} onPick={goTo} />
+      <Minimap containerRef={miniRef} dotRef={miniDotRef} discovered={discovered} onPick={goTo} />
     </div>
   );
 });
@@ -565,8 +633,6 @@ const Ground = memo(() => (
 
     <ellipse cx={LAKE.x} cy={LAKE.y} rx={LAKE.rx + 20} ry={LAKE.ry + 18} fill="#ead6a4" />
     <ellipse cx={LAKE.x} cy={LAKE.y} rx={LAKE.rx} ry={LAKE.ry} fill="url(#lakeGrad)" />
-    <ellipse className="lake-ripple" cx={LAKE.x - 60} cy={LAKE.y - 20} rx="60" ry="16" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="3" />
-    <ellipse className="lake-ripple r2" cx={LAKE.x + 70} cy={LAKE.y + 40} rx="50" ry="12" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="3" />
     {[[-140, 50], [-120, 70], [120, -60], [150, -40]].map(([dx, dy], i) => (
       <g key={i} transform={`translate(${LAKE.x + dx} ${LAKE.y + dy})`}>
         <circle r="13" fill="#4caf6a" />
@@ -574,10 +640,6 @@ const Ground = memo(() => (
         {i % 2 === 0 && <circle cx="-4" cy="-3" r="4" fill="#f9a8d4" />}
       </g>
     ))}
-    <g className="boat" transform={`translate(${LAKE.x + 20} ${LAKE.y + 10})`}>
-      <path d="M-34 0 Q0 22 34 0 Z" fill="#a46b47" />
-      <path d="M-30 0 H30" stroke="#7f5539" strokeWidth="3" />
-    </g>
 
     {decor.map((d, i) => {
       switch (d.kind) {
@@ -618,6 +680,53 @@ const Ground = memo(() => (
     <rect width={WORLD_W} height={WORLD_H} fill="url(#vignette)" />
   </svg>
 ));
+
+// Animated lake details live in their own small SVG so the big static ground never repaints.
+const LakeFx = memo(() => (
+  <svg
+    className="lake-fx"
+    width={LAKE.rx * 2}
+    height={LAKE.ry * 2}
+    viewBox={`${LAKE.x - LAKE.rx} ${LAKE.y - LAKE.ry} ${LAKE.rx * 2} ${LAKE.ry * 2}`}
+    style={{ left: LAKE.x - LAKE.rx, top: LAKE.y - LAKE.ry }}
+    aria-hidden="true"
+  >
+    <ellipse className="lake-ripple" cx={LAKE.x - 60} cy={LAKE.y - 20} rx="60" ry="16" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="3" />
+    <ellipse className="lake-ripple r2" cx={LAKE.x + 70} cy={LAKE.y + 40} rx="50" ry="12" fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth="3" />
+    <g className="boat" transform={`translate(${LAKE.x + 20} ${LAKE.y + 10})`}>
+      <path d="M-34 0 Q0 22 34 0 Z" fill="#a46b47" />
+      <path d="M-30 0 H30" stroke="#7f5539" strokeWidth="3" />
+    </g>
+  </svg>
+));
+
+// Depth sorting: sprites use z-index = their base y. The player only needs to sit just above the
+// last sprite whose base is above it, so its z-index changes only when it passes a sprite.
+const spriteDepths = Array.from(
+  new Set([
+    ...trees.map(t => Math.round(t.y)),
+    ...lamps.map(l => l.y),
+    ...landmarks.map(l => l.y),
+    fountain.y,
+  ]),
+).sort((a, b) => a - b);
+
+function depthFor(y: number): number {
+  const target = Math.round(y);
+  let lo = 0;
+  let hi = spriteDepths.length - 1;
+  let found = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (spriteDepths[mid] <= target) {
+      found = spriteDepths[mid];
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found; // ties go to the player, which comes later in the DOM and so paints on top
+}
 
 const Scenery = memo(() => (
   <>
@@ -672,11 +781,12 @@ const Lights = memo(() => (
 ));
 
 const Minimap: React.FC<{
-  dotRef: React.RefObject<SVGCircleElement>;
+  containerRef: React.RefObject<HTMLDivElement>;
+  dotRef: React.RefObject<HTMLDivElement>;
   discovered: Set<LandmarkId>;
   onPick: (id: LandmarkId) => void;
-}> = ({ dotRef, discovered, onPick }) => (
-  <div className="minimap" onPointerDown={e => e.stopPropagation()}>
+}> = ({ containerRef, dotRef, discovered, onPick }) => (
+  <div ref={containerRef} className="minimap" onPointerDown={e => e.stopPropagation()}>
     <svg viewBox={`0 0 ${WORLD_W} ${WORLD_H}`} aria-label="Minimap">
       <rect width={WORLD_W} height={WORLD_H} fill="#8fd174" />
       <g fill="none" stroke="#ead6a4" strokeWidth="40" strokeLinecap="round">
@@ -699,8 +809,8 @@ const Minimap: React.FC<{
           />
         </g>
       ))}
-      <circle ref={dotRef} cx={SPAWN.x} cy={SPAWN.y} r="44" fill="#fff" stroke="#0f172a" strokeWidth="16" className="mini-player" />
     </svg>
+    <div ref={dotRef} className="mini-player" aria-hidden="true" />
   </div>
 );
 
