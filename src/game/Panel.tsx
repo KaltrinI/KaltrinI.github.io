@@ -77,7 +77,7 @@ const Panel: React.FC<PanelProps> = ({ id, discovered, isTouch, onClose, onWalkT
           <PanelBody id={id} isTouch={isTouch} onOpenMap={onOpenMap} />
         </div>
 
-        <footer className="px-6 py-4 border-t border-slate-200/70 dark:border-white/10">
+        <footer className="px-6 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:pb-4 border-t border-slate-200/70 dark:border-white/10">
           {next.length > 0 ? (
             <>
               <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Where next?</p>
@@ -131,14 +131,16 @@ const PanelBody: React.FC<{ id: LandmarkId; isTouch: boolean; onOpenMap: () => v
             <H3>How to explore</H3>
             {isTouch ? (
               <ul className="space-y-1.5">
-                <li>Tap anywhere to walk there.</li>
-                <li>Tap a building to walk up and look inside.</li>
+                <li>Touch the screen and drag in any direction, then keep holding to walk. Drag further to run.</li>
+                <li>Tap a place or a building to walk straight there.</li>
+                <li>Pinch with two fingers, or use the + and − buttons, to zoom.</li>
               </ul>
             ) : (
               <ul className="space-y-1.5">
                 <li><kbd className="kbd">W</kbd><kbd className="kbd">A</kbd><kbd className="kbd">S</kbd><kbd className="kbd">D</kbd> or arrow keys to walk, <kbd className="kbd">Shift</kbd> to run.</li>
                 <li><kbd className="kbd">E</kbd> to interact when you’re near a landmark.</li>
-                <li>Or just click anywhere, or on a building, to walk there.</li>
+                <li>Or click anywhere, or on a building, to walk there. Click and drag works like a joystick.</li>
+                <li>Scroll, pinch on a trackpad, or press <kbd className="kbd">+</kbd> <kbd className="kbd">−</kbd> to zoom.</li>
                 <li><kbd className="kbd">M</kbd> opens the map.</li>
               </ul>
             )}
@@ -267,6 +269,12 @@ const SUBMIT_ERRORS: Record<string, string> = {
   missing_fields: 'Please fill in your name, email and message.',
 };
 
+class SubmitError extends Error {
+  constructor(code: string, readonly reason?: string) {
+    super(code);
+  }
+}
+
 const ContactForm: React.FC = () => {
   const { executeRecaptcha } = useGoogleReCaptcha();
   const [formData, setFormData] = useState({ name: '', email: '', message: '', website: '' });
@@ -299,12 +307,16 @@ const ContactForm: React.FC = () => {
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({ ...formData, token }),
       });
-      const result: { ok: boolean; error?: string } = await res.json();
-      if (!result.ok) throw new Error(result.error || 'unknown_error');
+      const result: { ok: boolean; error?: string; reason?: string } = await res.json();
+      if (!result.ok) throw new SubmitError(result.error || 'unknown_error', result.reason);
       setStatus('sent');
     } catch (err) {
       const code = err instanceof Error ? err.message : '';
-      setError(SUBMIT_ERRORS[code] ?? 'Something went wrong sending your message. Please try again or reach out on LinkedIn.');
+      const message =
+        SUBMIT_ERRORS[code] ?? 'Something went wrong sending your message. Please try again or reach out on LinkedIn.';
+      // Show the server's error code in small print so problems can be diagnosed from a screenshot.
+      const detail = err instanceof SubmitError ? [code, err.reason].filter(Boolean).join(': ') : '';
+      setError(detail ? `${message} (${detail})` : message);
       setStatus('error');
     }
   };
@@ -336,8 +348,17 @@ const ContactForm: React.FC = () => {
           </div>
           {/* Honeypot: hidden from people, but naive bots fill it in. */}
           <div className="absolute -left-[9999px] w-px h-px overflow-hidden" aria-hidden="true">
-            <label htmlFor="website">Website</label>
-            <input type="text" id="website" name="website" tabIndex={-1} autoComplete="off" value={formData.website} onChange={handleChange} />
+            {/* Looks like a normal field to bots, but browsers don't autofill a "subject". */}
+            <label htmlFor="subject">Subject</label>
+            <input
+              type="text"
+              id="subject"
+              name="subject"
+              tabIndex={-1}
+              autoComplete="off"
+              value={formData.website}
+              onChange={e => setFormData({ ...formData, website: e.target.value })}
+            />
           </div>
           {status === 'error' && (
             <p role="alert" className="rounded-xl px-4 py-3 text-sm bg-rose-50 text-rose-800 ring-1 ring-rose-200 dark:bg-rose-400/10 dark:text-rose-100 dark:ring-rose-300/20">

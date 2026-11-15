@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { GoogleReCaptchaProvider } from 'react-google-recaptcha-v3';
 import GameWorld, { GameWorldHandle } from './game/GameWorld';
 import Panel from './game/Panel';
-import { ActionButton, ControlsHint, HudButton, Intro, MapIcon, MapMenu, PlayerCard, ThemeIcon, Toast } from './game/Hud';
+import { ActionButton, ControlsHint, HudButton, Intro, MapIcon, MapMenu, PlayerCard, ThemeIcon, Toast, ZoomControls } from './game/Hud';
 import { LandmarkId, landmarkById, landmarks } from './game/world';
 import './game/game.css';
 
@@ -154,6 +154,11 @@ const App: React.FC = () => {
             </HudButton>
           </div>
         </div>
+
+        <ZoomControls
+          onZoomIn={() => worldRef.current?.zoomBy(1.25)}
+          onZoomOut={() => worldRef.current?.zoomBy(1 / 1.25)}
+        />
 
         <div className="hud-bottom">
           {nearby && !paused ? (

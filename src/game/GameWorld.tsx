@@ -9,6 +9,7 @@ import { FountainSprite, LampSprite, PlayerSprite, TreeSprite, landmarkSprites }
 export interface GameWorldHandle {
   walkTo: (id: LandmarkId) => void;
   teleportTo: (id: LandmarkId) => void;
+  zoomBy: (factor: number) => void;
 }
 
 interface Props {
@@ -31,9 +32,16 @@ const MOVE_KEYS: Record<string, [number, number]> = {
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName));
 
-function computeScale(vw: number, vh: number) {
+export const ZOOM_MIN = 0.55;
+export const ZOOM_MAX = 1.8;
+const DRAG_THRESHOLD = 12; // px a touch must travel before it counts as a joystick drag
+const JOY_RADIUS = 46; // px the joystick knob can travel
+const RUN_DISTANCE = 70; // px of drag after which the player runs
+
+function computeScale(vw: number, vh: number, zoom: number) {
   const base = vw < 640 ? 0.72 : vw < 1024 ? 0.85 : 1;
-  return Math.max(base, vw / WORLD_W, vh / WORLD_H);
+  // Never zoom out so far that the world no longer covers the screen.
+  return Math.max(base * zoom, vw / WORLD_W, vh / WORLD_H);
 }
 
 const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
@@ -47,6 +55,8 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
   const markerRef = useRef<HTMLDivElement>(null);
   const miniDotRef = useRef<SVGCircleElement>(null);
   const flashRef = useRef<HTMLDivElement>(null);
+  const joyRef = useRef<HTMLDivElement>(null);
+  const joyKnobRef = useRef<HTMLDivElement>(null);
 
   const [nearby, setNearby] = useState<LandmarkId | null>(null);
 
@@ -61,6 +71,12 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     stuck: 0,
     nearby: null as LandmarkId | null,
     moved: false, snapCam: true,
+    zoom: 1,
+    // Touch/mouse drag joystick: start point, current point, and whether it has become a drag.
+    joy: null as null | { id: number; sx: number; sy: number; cx: number; cy: number; dragging: boolean; landmark: LandmarkId | null },
+    pointers: new Map<number, { x: number; y: number }>(),
+    pinch: null as null | { d0: number; zoom0: number },
+    gestureUsed: false, // a pinch happened during this touch sequence, so the release is not a tap
   });
 
   const cb = useRef({ onInteract, onNearbyChange, onFirstMove, paused });
@@ -102,8 +118,16 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     m.classList.add('active');
   };
 
+  const setZoom = (z: number) => {
+    const st = s.current;
+    st.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    st.scale = computeScale(st.vw, st.vh, st.zoom);
+    st.snapCam = true;
+  };
+
   useImperativeHandle(ref, () => ({
     walkTo: goTo,
+    zoomBy: (factor: number) => setZoom(s.current.zoom * factor),
     teleportTo: (id: LandmarkId) => {
       const st = s.current;
       const l = landmarkById[id];
@@ -123,6 +147,10 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
   useEffect(() => {
     if (paused) {
       s.current.keys.clear();
+      s.current.joy = null;
+      s.current.pinch = null;
+      s.current.pointers.clear();
+      joyRef.current?.classList.remove('active');
     }
   }, [paused]);
 
@@ -133,7 +161,7 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     const resize = () => {
       st.vw = viewport.clientWidth;
       st.vh = viewport.clientHeight;
-      st.scale = computeScale(st.vw, st.vh);
+      st.scale = computeScale(st.vw, st.vh, st.zoom);
       st.snapCam = true;
     };
     resize();
@@ -160,6 +188,10 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       } else if ((e.code === 'KeyE' || e.code === 'Enter' || e.code === 'Space') && st.nearby) {
         e.preventDefault();
         cb.current.onInteract(st.nearby);
+      } else if (e.key === '+' || e.key === '=') {
+        setZoom(st.zoom * 1.2);
+      } else if (e.key === '-' || e.key === '_') {
+        setZoom(st.zoom / 1.2);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -171,20 +203,102 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
 
+    // Pointer input: a quick tap walks to the spot (or landmark); press-and-drag works as a
+    // floating joystick (hold to keep walking, drag further to run); two fingers pinch-zoom.
+    const pinchDistance = () => {
+      const [a, b] = Array.from(st.pointers.values());
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    const hideJoystick = () => joyRef.current?.classList.remove('active');
+
     const onPointerDown = (e: PointerEvent) => {
-      if (cb.current.paused || e.button !== 0) return;
+      if (cb.current.paused || (e.pointerType === 'mouse' && e.button !== 0)) return;
+      if ((e.target as HTMLElement).closest('.minimap')) return;
+      viewport.setPointerCapture?.(e.pointerId);
+      st.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (st.pointers.size === 1) st.gestureUsed = false;
+      if (st.pointers.size === 2) {
+        st.pinch = { d0: pinchDistance(), zoom0: st.zoom };
+        st.joy = null;
+        st.gestureUsed = true;
+        hideJoystick();
+        return;
+      }
+      if (st.pointers.size > 2) return;
       const el = (e.target as HTMLElement).closest('[data-landmark]') as HTMLElement | null;
+      st.joy = {
+        id: e.pointerId,
+        sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY,
+        dragging: false,
+        landmark: el ? (el.dataset.landmark as LandmarkId) : null,
+      };
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!st.pointers.has(e.pointerId)) return;
+      st.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (st.pinch && st.pointers.size >= 2) {
+        setZoom(st.pinch.zoom0 * (pinchDistance() / Math.max(1, st.pinch.d0)));
+        return;
+      }
+      const j = st.joy;
+      if (!j || j.id !== e.pointerId) return;
+      j.cx = e.clientX;
+      j.cy = e.clientY;
+      const ox = j.cx - j.sx;
+      const oy = j.cy - j.sy;
+      if (!j.dragging && Math.hypot(ox, oy) > DRAG_THRESHOLD) {
+        j.dragging = true;
+        st.target = null;
+        st.route = [];
+        st.pending = null;
+        markMoved();
+        const rect = viewport.getBoundingClientRect();
+        if (joyRef.current) {
+          joyRef.current.style.transform = `translate3d(${j.sx - rect.left}px, ${j.sy - rect.top}px, 0)`;
+          joyRef.current.classList.add('active');
+        }
+      }
+      if (j.dragging && joyKnobRef.current) {
+        const len = Math.hypot(ox, oy);
+        const k = len > JOY_RADIUS ? JOY_RADIUS / len : 1;
+        joyKnobRef.current.style.transform = `translate3d(${ox * k}px, ${oy * k}px, 0)`;
+      }
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      st.pointers.delete(e.pointerId);
+      if (st.pointers.size < 2) st.pinch = null;
+      const j = st.joy;
+      if (!j || j.id !== e.pointerId) return;
+      st.joy = null;
+      hideJoystick();
+      if (j.dragging || st.gestureUsed || e.type !== 'pointerup' || cb.current.paused) return;
+      // It was a tap.
       markMoved();
-      if (el) {
-        goTo(el.dataset.landmark as LandmarkId);
+      if (j.landmark) {
+        goTo(j.landmark);
         return;
       }
       const rect = viewport.getBoundingClientRect();
-      const x = (e.clientX - rect.left) / st.scale + st.camX;
-      const y = (e.clientY - rect.top) / st.scale + st.camY;
-      planRoute(x, y);
+      planRoute((j.sx - rect.left) / st.scale + st.camX, (j.sy - rect.top) / st.scale + st.camY);
     };
+
+    const onWheel = (e: WheelEvent) => {
+      if (cb.current.paused || (e.target as HTMLElement).closest('.minimap')) return;
+      e.preventDefault();
+      // Trackpad pinch arrives as ctrl+wheel with small deltas; scale it up to feel similar.
+      const delta = e.ctrlKey ? e.deltaY * 4 : e.deltaY;
+      setZoom(st.zoom * Math.exp(-delta * 0.0015));
+    };
+    const stopGesture = (e: Event) => e.preventDefault(); // iOS Safari page pinch-zoom
+
     viewport.addEventListener('pointerdown', onPointerDown);
+    viewport.addEventListener('pointermove', onPointerMove);
+    viewport.addEventListener('pointerup', onPointerUp);
+    viewport.addEventListener('pointercancel', onPointerUp);
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    viewport.addEventListener('gesturestart', stopGesture);
 
     let raf = 0;
     let last = performance.now();
@@ -199,6 +313,16 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
           dx += MOVE_KEYS[k][0];
           dy += MOVE_KEYS[k][1];
         });
+        const j = st.joy;
+        if (!dx && !dy && j && j.dragging) {
+          const ox = j.cx - j.sx;
+          const oy = j.cy - j.sy;
+          const len = Math.hypot(ox, oy);
+          if (len > DRAG_THRESHOLD / 2) {
+            dx = ox / len;
+            dy = oy / len;
+          }
+        }
         if (!dx && !dy && st.target) {
           const tx = st.target.x - st.x;
           const ty = st.target.y - st.y;
@@ -221,7 +345,8 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       const moving = dx !== 0 || dy !== 0;
       if (moving) {
         const len = Math.hypot(dx, dy);
-        const speed = st.sprint ? 380 : 240;
+        const joyRun = st.joy?.dragging && Math.hypot(st.joy.cx - st.joy.sx, st.joy.cy - st.joy.sy) > RUN_DISTANCE;
+        const speed = st.sprint || joyRun ? 380 : 240;
         let step = speed * dt;
         if (st.target) step = Math.min(step, Math.hypot(st.target.x - st.x, st.target.y - st.y));
         const mx = (dx / len) * step;
@@ -309,6 +434,11 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
       viewport.removeEventListener('pointerdown', onPointerDown);
+      viewport.removeEventListener('pointermove', onPointerMove);
+      viewport.removeEventListener('pointerup', onPointerUp);
+      viewport.removeEventListener('pointercancel', onPointerUp);
+      viewport.removeEventListener('wheel', onWheel);
+      viewport.removeEventListener('gesturestart', stopGesture);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -384,6 +514,10 @@ const GameWorld = forwardRef<GameWorldHandle, Props>(function GameWorld(
       </div>
 
       <div ref={flashRef} className="travel-flash" />
+
+      <div ref={joyRef} className="joystick" aria-hidden="true">
+        <div ref={joyKnobRef} className="joystick-knob" />
+      </div>
 
       <Minimap dotRef={miniDotRef} discovered={discovered} onPick={goTo} />
     </div>

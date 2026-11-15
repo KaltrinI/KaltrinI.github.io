@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { FaCheck, FaMap, FaMoon, FaSun, FaTimes } from 'react-icons/fa';
+import { FaCheck, FaMap, FaMinus, FaMoon, FaPlus, FaSun, FaTimes } from 'react-icons/fa';
 import { landmarkIcons } from './Panel';
 import { LandmarkId, landmarkById, landmarks } from './world';
 
@@ -47,13 +47,17 @@ export const MapIcon = () => <FaMap aria-hidden="true" />;
 export const ControlsHint: React.FC<{ visible: boolean; isTouch: boolean }> = ({ visible, isTouch }) => (
   <div className={`controls-hint glass ${visible ? '' : 'is-hidden'}`} aria-hidden={!visible}>
     {isTouch ? (
-      <span>Tap to walk · Tap a building to visit it</span>
+      <>
+        <span>Drag to walk</span>
+        <span>Tap to go</span>
+        <span>Pinch to zoom</span>
+      </>
     ) : (
       <>
         <span><kbd className="kbd">W</kbd><kbd className="kbd">A</kbd><kbd className="kbd">S</kbd><kbd className="kbd">D</kbd> move</span>
         <span><kbd className="kbd">E</kbd> interact</span>
         <span><kbd className="kbd">M</kbd> map</span>
-        <span className="hidden sm:inline">or click to walk</span>
+        <span className="hidden sm:inline">click or drag to walk · scroll to zoom</span>
       </>
     )}
   </div>
@@ -79,6 +83,18 @@ export const ActionButton: React.FC<{ id: LandmarkId | null; onClick: (id: Landm
     </button>
   );
 };
+
+export const ZoomControls: React.FC<{ onZoomIn: () => void; onZoomOut: () => void }> = ({ onZoomIn, onZoomOut }) => (
+  <div className="zoom-controls glass" role="group" aria-label="Zoom">
+    <button onClick={onZoomIn} aria-label="Zoom in" title="Zoom in (+)">
+      <FaPlus aria-hidden="true" />
+    </button>
+    <span className="zoom-divider" aria-hidden="true" />
+    <button onClick={onZoomOut} aria-label="Zoom out" title="Zoom out (−)">
+      <FaMinus aria-hidden="true" />
+    </button>
+  </div>
+);
 
 export const Toast: React.FC<{ message: string | null }> = ({ message }) => (
   <div className="toast-wrap" role="status" aria-live="polite">
@@ -180,7 +196,7 @@ export const Intro: React.FC<{ isTouch: boolean; onStart: () => void; onMap: () 
           built, and how to reach me.
         </p>
         <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">
-          {isTouch ? 'Tap anywhere to walk.' : (
+          {isTouch ? 'Drag and hold to walk, tap a place to go there, pinch to zoom.' : (
             <>
               <kbd className="kbd">W</kbd><kbd className="kbd">A</kbd><kbd className="kbd">S</kbd><kbd className="kbd">D</kbd> to walk,{' '}
               <kbd className="kbd">E</kbd> to interact, or just click.

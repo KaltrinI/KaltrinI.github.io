@@ -41,7 +41,10 @@ function doPost(e) {
 
     const captcha = verifyRecaptcha(data.token);
     if (captcha.error) return json({ ok: false, error: captcha.error });
-    if (!captcha.ok) return json({ ok: false, error: 'captcha_failed' });
+    if (!captcha.ok) {
+      console.log('reCAPTCHA rejected: ' + captcha.reason);
+      return json({ ok: false, error: 'captcha_failed', reason: captcha.reason });
+    }
 
     getSheet().appendRow([new Date(), safe(name), safe(email), safe(message), captcha.score, captcha.hostname]);
     notify(name, email, message);
@@ -53,7 +56,7 @@ function doPost(e) {
 }
 
 /**
- * Returns { ok, score, hostname } or { error } for setup problems. Error codes are safe to expose:
+ * Returns { ok, reason, score, hostname } or { error } for setup problems. Error codes are safe to expose:
  *   not_configured      RECAPTCHA_SECRET script property is missing
  *   verify_unavailable  the script can't reach Google (usually not authorized for external requests)
  *   bad_secret          Google rejected the secret key
@@ -64,7 +67,7 @@ function verifyRecaptcha(token) {
     console.error('RECAPTCHA_SECRET script property is not set');
     return { error: 'not_configured' };
   }
-  if (!token) return { ok: false };
+  if (!token) return { ok: false, reason: 'missing_token' };
 
   let body;
   try {
@@ -82,8 +85,12 @@ function verifyRecaptcha(token) {
     console.error('Google rejected RECAPTCHA_SECRET (invalid-input-secret)');
     return { error: 'bad_secret' };
   }
-  const ok = body.success === true && body.action === EXPECTED_ACTION && body.score >= MIN_SCORE;
-  return { ok: ok, score: body.score, hostname: body.hostname || '' };
+  // reason helps diagnose rejections: Google's error code, or which of our checks failed.
+  let reason = '';
+  if (body.success !== true) reason = (body['error-codes'] || ['unknown']).join(',');
+  else if (body.action !== EXPECTED_ACTION) reason = 'wrong_action';
+  else if (!(body.score >= MIN_SCORE)) reason = 'low_score';
+  return { ok: !reason, reason: reason, score: body.score, hostname: body.hostname || '' };
 }
 
 function getSheet() {
